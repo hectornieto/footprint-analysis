@@ -1,0 +1,17 @@
+name:
+  footprint
+channels:
+  - conda-forge
+  - default
+ 
+dependencies:
+  - python=3.9
+  - numpy
+  - scipy
+  - gdal
+  - proj
+  - pyproj
+  - pip
+  - pip:
+    - git+https://github.com/hectornieto/pytseb
+

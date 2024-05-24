@@ -1,0 +1,7 @@
+numpy
+scipy
+gdal
+proj
+pyproj
+pytseb @ git+https://github.com/hectornieto/pytseb
+
