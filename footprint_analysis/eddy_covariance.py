@@ -2,7 +2,6 @@ from osgeo import gdal
 from os.path import exists
 import numpy as np
 from scipy.ndimage.interpolation import rotate
-from pyTSEB import meteo_utils as met
 from pyTSEB import MO_similarity as mo
 
 # Global constants
@@ -13,7 +12,7 @@ N_BINS = 1e3
 
 def footprint_Detto(ustar, h, le, t_a, zm, zo, sigma_v=None, cutout=0.9, n_bins=N_BINS):
     '''Estimates the 2D footprint (or source weight function)
-   
+
     Parameters
     ----------
     ustar : friction velocity (m/s)
@@ -23,7 +22,7 @@ def footprint_Detto(ustar, h, le, t_a, zm, zo, sigma_v=None, cutout=0.9, n_bins=
     zm    : Instrument height (m)
     zo    : Momentum roughness height (m)
     sigma_v : standard deviation of the cross wind velocity
-    
+
     Returns
     -------
     Fp_xy : 2D Source contribution with distance (pixels)
@@ -38,7 +37,7 @@ def footprint_Detto(ustar, h, le, t_a, zm, zo, sigma_v=None, cutout=0.9, n_bins=
     fp_xy = np.zeros((len(y), len(xy)))
     for i in range(end):
         for j in range(len(y)):
-            # Calculate Eckman's sigma_y based on the standard deviation in the lateral wind fluctuations 
+            # Calculate Eckman's sigma_y based on the standard deviation in the lateral wind fluctuations
             sigma_y = calc_sigma_y(zo, sigma_v, ustar, x[i])
             # Calculate the lateral diffusion (Eq B3 in Detto et al. 2005)
             d_y = np.exp(-0.5 * (y[j] * (1. / sigma_y)) ** 2) * (1.0 / (np.sqrt(2.0 * np.pi) * sigma_y))
@@ -51,11 +50,11 @@ def footprint_Detto(ustar, h, le, t_a, zm, zo, sigma_v=None, cutout=0.9, n_bins=
 
 
 def footprint_Hsieh(ustar, h, le, t_a, zm, zo, n_bins=N_BINS):
-    '''Estimates the footprint (or source weight function) along the upwind distance 
-        (x=0 is measuring point)               
+    '''Estimates the footprint (or source weight function) along the upwind distance
+        (x=0 is measuring point)
 
     Authors:    Gaby Katul and Cheng-I Hsieh
-   
+
     Parameters
     ----------
     ustar : friction velocity (m/s)
@@ -64,7 +63,7 @@ def footprint_Hsieh(ustar, h, le, t_a, zm, zo, n_bins=N_BINS):
     Ta    : Mean air temperature (oC)
     zm    : Instrument height (m)
     zo    : Momentum roughness height (m)
-    
+
     Returns
     -------
     Fc : Cumulative source contribution with distance (fraction)
@@ -73,10 +72,10 @@ def footprint_Hsieh(ustar, h, le, t_a, zm, zo, n_bins=N_BINS):
     xp : Peak distance from measuring point to the maximum contributing source area (m)
     x  : Distance vector used in the computation of Fc, fp (m)
     F2H: Fetch to Height ratio (for 90% of flux recovery, i.e. 100:1 or 20:1)
-    
-    Reference:    Hsieh, C.I., G.G. Katul, and T.W. Chi, 2000,  
-        "An approximate analytical model for footprint estimation of scalar fluxes 
-        in thermally stratified atmospheric flows", 
+
+    Reference:    Hsieh, C.I., G.G. Katul, and T.W. Chi, 2000,
+        "An approximate analytical model for footprint estimation of scalar fluxes
+        in thermally stratified atmospheric flows",
         Advances in Water Resources, 23, 765-772.'''
 
     CP = 1005  # Specific heat capacity of dry air at
@@ -119,19 +118,19 @@ def footprint_Hsieh(ustar, h, le, t_a, zm, zo, n_bins=N_BINS):
 
 def calc_sigma_y(zo, sigma_v, ustar, x):
     '''Estimate horizontal standard deviation of the concentration distribution
-    
+
     Parameters
     ----------
     zo          : momentum roughness height (m)
     sigma_v     : standard deviation of the horizontal crosswind velocity fluctuations
     ustar       : friction velocity (m/s)
     x           : distance vector into the upwind direction from measurement point (m)
-    
+
     Returns
     -------
     sigma_y = horizontal standard deviation of the concentration distribution
-    
-    following Eckman, R., 1994, "Re-examination of empirically derived formulas 
+
+    following Eckman, R., 1994, "Re-examination of empirically derived formulas
         for horizontal diffusion from surface sources", Atmospheric Environment,
         28, 265-272'''
 
@@ -144,23 +143,24 @@ def calc_sigma_y(zo, sigma_v, ustar, x):
 
 def calc_sigma_v(ustar, l_mo):
     '''% estimate sigma_v using bounary layer height = 3000m
-    
+
     Parameters
     ----------
     l_mo : Obukhov length (m)
     ustar : friction velocity (m s-1)
-    
+
     Returns
     -------
     sigma_v : standard deviation of the cross wind velocity'''
-
+    if l_mo > 0:
+        l_mo = np.inf
     sigma_v = ustar * (12.0 - 0.5 * 3000.0 / l_mo) ** (1.0 / 3.0)
     return sigma_v
 
 
 def geolocate_2d_footprint(fp_xy, xy, windir, tower_position, projection, outputfile):
     ''' Saves footprint Fp_xy in a georreferenced GDAL file
-    
+
     Parameters
     ----------
     fp_xy :
@@ -178,13 +178,13 @@ def geolocate_2d_footprint(fp_xy, xy, windir, tower_position, projection, output
     temp[int(rows / 4):3 * int(rows / 4), int(cols / 2):cols] = fp_xy
     fp_xy = np.array(temp)
     # Then rotate the matrx
-    # since the footprint model is oriented eastwards the windir azimuth angle 
+    # since the footprint model is oriented eastwards the windir azimuth angle
     # (0=north, 90 East) must be substracted 90
     fp_xy = rotate(fp_xy, -(windir - 90.0), reshape=True, order=1)
     # Normalize the footprint contributions
     fp_xy = fp_xy / np.sum(fp_xy)
     # locate tower at the centre of the footprint image and geolocate the image
-    # GDAL geolocation model considers the top left pixel, and real world pixel 
+    # GDAL geolocation model considers the top left pixel, and real world pixel
     # size must agree with the axis directions
     rows, cols = np.shape(fp_xy)
     delta_x = xy[2] - xy[1]
@@ -206,57 +206,36 @@ def geolocate_2d_footprint(fp_xy, xy, windir, tower_position, projection, output
         return False
 
 
-def resample_footprint(outputfile, outputsize, gt):
+def resample_footprint(input_file, out_gt, out_size, out_proj):
     '''Resamples a 2D footprint image file to a desired extent expressed by rows,cols & Geolocation
-    
+
     Parameters
     ----------
     outputfile : path to a GDAL image with the footprint in band 1
     outputsize : Size in pixel of the output image (rows,cols)
     gt : GDAL geotransforrm array
         [UL_X,pixel_size_X,Rotation_X,UL_Y,Rotation_Y,pixel_size_Y]
-        
+
     Returns
     -------
     fp2output : resampled 2d footprint array'''
+    # xmin ymax xmax ymin
+    extent = [out_gt[0],
+              out_gt[3] + out_gt[5] * out_size[1],
+              out_gt[0] + out_gt[1] * out_size[0],
+              out_gt[3]]
 
-    # open footprint image
-    if not exists(outputfile):
-        print(outputfile + ' not found')
-        return False
+    warp_opts = {"outputBounds": extent,
+                 "width": out_size[1],
+                 "height": out_size[0],
+                 "dstSRS": out_proj,
+                 "resampleAlg": "average"}
 
-    fid = gdal.Open(outputfile, gdal.GA_ReadOnly)
-    in_geolocation = fid.GetGeoTransform()
-    fp2din = fid.GetRasterBand(1).ReadAsArray()
-    inputsize = fp2din.shape
-    del fid
-
-    # Create the ouput array
-    fp2dout = np.zeros(outputsize)
-
-    # Get the output & input coordinates
-    pixels = ((row, col) for row in np.arange(outputsize[0]) for col in np.arange(outputsize[1]))
-
-    incols, inrows = np.meshgrid(np.arange(inputsize[1]), np.arange(inputsize[0]))
-    X_in = in_geolocation[0] + in_geolocation[1] * incols + gt[2] * inrows
-    Y_in = in_geolocation[3] + in_geolocation[4] * incols + gt[5] * inrows
-    # loop the output coordinates to get the total footprint contribution per pixel
-    row0 = 0
-    for outrow, outcol in pixels:
-        if outrow != row0:
-            row0 = outrow
-            print('Processing row %s' % row0)
-        x_out = gt[0] + gt[1] * outcol + gt[2] * outrow
-        y_out = gt[3] + gt[4] * outcol + gt[5] * outrow
-        x_out1 = x_out + gt[1]
-        y_out1 = y_out + gt[5]
-        # Find the pixels in the input footprint array that falls in the coordinate grid
-        index = np.where(np.logical_and(np.logical_and(X_in >= x_out, X_in <= x_out1),
-                                        np.logical_and(Y_in >= y_out1, Y_in <= y_out)))
-        if np.size(index) > 0:
-            fp_pixel = np.sum(fp2din[index])
-            fp2dout[outrow, outcol] = fp_pixel
-
+    tmp_file = input_file.parent / "MEM.tif"
+    gdal.Warp(str(tmp_file), str(input_file), **warp_opts)
+    fid = gdal.Open(str(tmp_file))
+    fp2dout = fid.GetRasterBand(1).ReadAsArray()
     # Normalize the footporint
-    fp2dout = fp2dout / np.sum(fp2dout)
+    fp2dout = fp2dout / np.nansum(fp2dout)
+    tmp_file.unlink()
     return fp2dout
