@@ -1,16 +1,20 @@
 from osgeo import gdal
 from os.path import exists
 import numpy as np
+from numpy import ma
 from scipy.ndimage.interpolation import rotate
 from pyTSEB import MO_similarity as mo
+from matplotlib import pyplot as plt
 
 # Global constants
 # von Karman's constant
 KARMAN = 0.4
 N_BINS = 1e3
+CP = 1005  # Specific heat capacity of dry air at
 
 
-def footprint_Detto(ustar, h, le, t_a, zm, zo, sigma_v=None, cutout=0.9, n_bins=N_BINS):
+def footprint_Detto(ustar, h, le, t_a, zm, zo, sigma_v=None, bl_height=3000,
+                    cutout=0.9, n_bins=N_BINS):
     '''Estimates the 2D footprint (or source weight function)
 
     Parameters
@@ -29,7 +33,10 @@ def footprint_Detto(ustar, h, le, t_a, zm, zo, sigma_v=None, cutout=0.9, n_bins=
     xy  : Distance vector used in the computation of Fc, fp (m)'''
 
     # calculate one-dimensional footprint in the upwind direction following Hsieh
-    [fc, fp, x, *_] = footprint_Hsieh(ustar, h, le, t_a, zm, zo, n_bins=n_bins)
+    [fc, fp, x, ol, *_] = footprint_Hsieh(ustar, h, le, t_a, zm, zo, n_bins=n_bins)
+    if not sigma_v:
+        sigma_v = calc_sigma_v(ustar, ol, bl_height=bl_height)
+
     # calculate horizontal standard deviation of the concentration distribution% following Eckman
     end = len(fc[fc <= cutout])
     y = x[0:int(np.floor(end / 4))]
@@ -47,6 +54,175 @@ def footprint_Detto(ustar, h, le, t_a, zm, zo, sigma_v=None, cutout=0.9, n_bins=
     # Get the "other (simetrical) half of the footprint
     fp_xy = np.vstack((np.flipud(fp_xy), fp_xy))
     return fp_xy, xy
+
+
+def footprint_Kljun(ustar, h, le, t_a, zm, zo, sigma_v=None, bl_height=3000,
+                    cutout=0.9, n_bins=N_BINS):
+    """
+    Adaoted from https://footprint.kljun.net/
+
+    Returns
+    -------
+
+    References:
+    -----------
+    .. [Kljun2015]  Kljun, N., Calanca, P., Rotach, M. W., and Schmid, H. P.:
+        A simple two-dimensional parameterisation for Flux Footprint Prediction
+        (FFP)
+        Geosci. Model Dev., 8, 3695–3713, 2015
+        https://doi.org/10.5194/gmd-8-3695-2015
+    """
+
+    def get_contour_levels(f, dx, dy, rs=None):
+        '''Contour levels of f at percentages of f-integral given by rs'''
+
+        # Check input and resolve to default levels in needed
+        if not isinstance(rs, (int, float, list)):
+            rs = list(np.linspace(0.10, 0.90, 9))
+        if isinstance(rs, (int, float)): rs = [rs]
+
+        # Levels
+        pclevs = np.empty(len(rs))
+        pclevs[:] = np.nan
+        ars = np.empty(len(rs))
+        ars[:] = np.nan
+
+        sf = np.sort(f, axis=None)[::-1]
+        # Masked array for handling potential nan
+        msf = ma.masked_array(sf, mask=(np.isnan(sf) | np.isinf(sf)))
+
+        csf = msf.cumsum().filled(np.nan) * dx * dy
+        for ix, r in enumerate(rs):
+            dcsf = np.abs(csf - r)
+            pclevs[ix] = sf[np.nanargmin(dcsf)]
+            ars[ix] = csf[np.nanargmin(dcsf)]
+
+        return [(round(r, 3), ar, pclev)
+                for r, ar, pclev in zip(rs, ars, pclevs)]
+
+
+    def get_contour_vertices(x, y, f, lev):
+
+        cs = plt.contour(x, y, f, [lev])
+        plt.close()
+        segs = cs.allsegs[0][0]
+        xr = [vert[0] for vert in segs]
+        yr = [vert[1] for vert in segs]
+        # Set contour to None if it's found to reach the physical domain
+        if x.min() >= min(segs[:, 0]) or max(segs[:, 0]) >= x.max() or \
+                y.min() >= min(segs[:, 1]) or max(segs[:, 1]) >= y.max():
+            return [None, None]
+
+        # x,y coords of contour points.
+        return [xr, yr]
+
+    # Model parameters
+    a = 1.4524
+    b = -1.9914
+    c = 1.4622
+    d = 0.1359
+    ac = 2.17
+    bc = 1.66
+    cc = 20.0
+
+    xstar_end = 30
+    oln = 5000  # limit to L for neutral scaling
+    t_a_k = t_a + 273.15  # Convert oC to K
+    rho = 1.3079 - 0.0045 * t_a  # Density of air (kg/m3)
+    ol = mo.calc_L(ustar, t_a_k, rho, CP, h, le)  # Obukhov Length (m)
+    if not sigma_v:
+        sigma_v = calc_sigma_v(ustar, ol)
+    # ===========================================================================
+    # Scaled X* for crosswind integrated footprint
+    xstar_ci_param = np.linspace(d, xstar_end, n_bins + 2)
+    xstar_ci_param = xstar_ci_param[1:]
+
+    # Crosswind integrated scaled F*
+    fstar_ci_param = a * (xstar_ci_param - d) ** b * np.exp(-c / (xstar_ci_param - d))
+    ind_notnan = ~np.isnan(fstar_ci_param)
+    fstar_ci_param = fstar_ci_param[ind_notnan]
+    xstar_ci_param = xstar_ci_param[ind_notnan]
+
+    # Scaled sig_y*
+    sigystar_param = ac * np.sqrt(bc * xstar_ci_param ** 2 / (1 + cc * xstar_ci_param))
+
+    # ===========================================================================
+    # Real scale x and f_ci
+    if ol <= 0 or ol >= oln:
+        xx = (1 - 19.0 * zm / ol) ** 0.25
+        psi_f = np.log((1 + xx ** 2) / 2.) + 2. * np.log((1 + xx) / 2.) \
+                - 2. * np.arctan(xx) + np.pi / 2
+    else:
+        psi_f = -5.3 * zm / ol
+
+    x = xstar_ci_param * zm / (1. - (zm / bl_height)) * (np.log(zm / zo) - psi_f)
+    if np.log(zm / zo) - psi_f > 0:
+        x_ci = x
+        f_ci = fstar_ci_param / zm * (1. - (zm / bl_height)) / (np.log(zm / zo) - psi_f)
+    else:
+        return None, None
+
+    # Real scale sig_y
+    if abs(ol) > oln:
+        ol = -1E6
+    if ol <= 0:  # convective
+        scale_const = 1E-5 * abs(zm / ol) ** (-1) + 0.80
+    else:  # stable
+        scale_const = 1E-5 * abs(zm / ol) ** (-1) + 0.55
+    if scale_const > 1:
+        scale_const = 1.0
+    sigy = sigystar_param / scale_const * zm * sigma_v / ustar
+    sigy[sigy < 0] = np.nan
+
+    # Real scale f(x,y)
+    dx = np.abs(x_ci[2] - x_ci[1])
+    if dx == 0:
+        print("Could not compute footprint")
+        return None, None
+
+    y_pos = np.arange(0, (len(x_ci) / 2.) * dx * 1.5, dx)
+    # f_pos = np.full((len(f_ci), len(y_pos)), np.nan)
+    f_pos = np.empty((len(f_ci), len(y_pos)))
+    f_pos[:] = np.nan
+    for ix in range(len(f_ci)):
+        f_pos[ix, :] = f_ci[ix] * 1 / (np.sqrt(2 * np.pi) * sigy[ix]) \
+                       * np.exp(-y_pos ** 2 / (2 * sigy[ix] ** 2))
+
+    #Complete footprint for negative y (symmetrical)
+    y_neg = - np.fliplr(y_pos[None, :])[0]
+    f_neg = np.fliplr(f_pos)
+    y = np.concatenate((y_neg[0:-1], y_pos))
+    f = np.concatenate((f_neg[:, :-1].T, f_pos.T)).T
+
+    #Matrices for output
+    x_2d = np.tile(x[:,None], (1,len(y)))
+    y_2d = np.tile(y.T,(len(x),1))
+    f_2d = f
+    if np.size(f_2d) == 0:
+        return None, None
+
+    # Crop domain and footprint to the cutout value
+    dy = dx
+    clevs = get_contour_levels(f_2d, dx, dy, cutout)
+    xrs, yrs = get_contour_vertices(x_2d, y_2d, f_2d, clevs[0][2])
+    if not isinstance(xrs, type(None)) and not isinstance(yrs, type(None)) :
+        xrs_crop = [x for x in xrs if x is not None]
+        yrs_crop = [x for x in yrs if x is not None]
+        dminx = np.floor(min(xrs_crop))
+        dmaxx = np.ceil(max(xrs_crop))
+        dminy = np.floor(min(yrs_crop))
+        dmaxy = np.ceil(max(yrs_crop))
+        jrange = np.where((y_2d[0] >= dminy) & (y_2d[0] <= dmaxy))[0]
+        jrange = np.concatenate(([jrange[0] - 1], jrange, [jrange[-1] + 1]))
+        jrange = jrange[np.where((jrange >= 0) & (jrange <= y_2d.shape[0] - 1))[0]]
+        irange = np.where((x_2d[:, 0] >= dminx) & (x_2d[:, 0] <= dmaxx))[0]
+        irange = np.concatenate(([irange[0] - 1], irange, [irange[-1] + 1]))
+        irange = irange[np.where((irange >= 0) & (irange <= x_2d.shape[1] - 1))[0]]
+        jrange = [[it] for it in jrange]
+        x_2d = x_2d[irange, jrange]
+        f_2d = f_2d[irange, jrange]
+    return f_2d, x_2d[0]
+
 
 
 def footprint_Hsieh(ustar, h, le, t_a, zm, zo, n_bins=N_BINS):
@@ -73,12 +249,14 @@ def footprint_Hsieh(ustar, h, le, t_a, zm, zo, n_bins=N_BINS):
     x  : Distance vector used in the computation of Fc, fp (m)
     F2H: Fetch to Height ratio (for 90% of flux recovery, i.e. 100:1 or 20:1)
 
-    Reference:    Hsieh, C.I., G.G. Katul, and T.W. Chi, 2000,
+    References:
+    -----------
+    .. [Hsieh2000] Hsieh, C.I., G.G. Katul, and T.W. Chi, 2000,
         "An approximate analytical model for footprint estimation of scalar fluxes
         in thermally stratified atmospheric flows",
-        Advances in Water Resources, 23, 765-772.'''
+        Advances in Water Resources, 23, 765-772.
+    '''
 
-    CP = 1005  # Specific heat capacity of dry air at
     t_a_k = t_a + 273.15  # Convert oC to K
     rho = 1.3079 - 0.0045 * t_a  # Density of air (kg/m3)
     L = mo.calc_L(ustar, t_a_k, rho, CP, h, le)  # Obukhov Length (m)
@@ -141,7 +319,7 @@ def calc_sigma_y(zo, sigma_v, ustar, x):
     return sigma_y
 
 
-def calc_sigma_v(ustar, l_mo):
+def calc_sigma_v(ustar, l_mo, bl_height=3000.):
     '''% estimate sigma_v using bounary layer height = 3000m
 
     Parameters
@@ -154,7 +332,7 @@ def calc_sigma_v(ustar, l_mo):
     sigma_v : standard deviation of the cross wind velocity'''
     if l_mo > 0:
         l_mo = np.inf
-    sigma_v = ustar * (12.0 - 0.5 * 3000.0 / l_mo) ** (1.0 / 3.0)
+    sigma_v = ustar * (12.0 - 0.5 * bl_height / l_mo) ** (1.0 / 3.0)
     return sigma_v
 
 
@@ -175,7 +353,7 @@ def geolocate_2d_footprint(fp_xy, xy, windir, tower_position, projection, output
     rows, cols = np.shape(fp_xy)
     temp = np.zeros((rows * 2, cols * 2))
     rows, cols = np.shape(temp)
-    temp[int(rows / 4):3 * int(rows / 4), int(cols / 2):cols] = fp_xy
+    temp[int(rows / 4):int(3 * rows / 4), int(cols / 2):cols] = fp_xy
     fp_xy = np.array(temp)
     # Then rotate the matrx
     # since the footprint model is oriented eastwards the windir azimuth angle
@@ -187,7 +365,11 @@ def geolocate_2d_footprint(fp_xy, xy, windir, tower_position, projection, output
     # GDAL geolocation model considers the top left pixel, and real world pixel
     # size must agree with the axis directions
     rows, cols = np.shape(fp_xy)
-    delta_x = xy[2] - xy[1]
+    delta_x = np.nanmean(xy[2:] - xy[1:-1])
+    if delta_x == 0:
+        print("Could not compute geotransform")
+        return False
+
     delta_y = -delta_x
     ul = np.array(tower_position) - np.array([int(delta_x * cols / 2.0), int(delta_y * rows / 2.0)])
     geolocation = [ul[0], delta_x, 0, ul[1], 0, delta_y]
