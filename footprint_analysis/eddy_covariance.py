@@ -403,8 +403,8 @@ def resample_footprint(input_file, out_gt, out_size, out_proj):
     fp2output : resampled 2d footprint array'''
     # xmin ymax xmax ymin
     extent = [out_gt[0],
-              out_gt[3] + out_gt[5] * out_size[1],
-              out_gt[0] + out_gt[1] * out_size[0],
+              out_gt[3] + out_gt[5] * out_size[0],
+              out_gt[0] + out_gt[1] * out_size[1],
               out_gt[3]]
 
     warp_opts = {"outputBounds": extent,
